@@ -1,0 +1,82 @@
+name: Create Site
+
+on:
+  repository_dispatch:
+    types: [create_site]
+
+jobs:
+  create_site:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create new repository
+        id: create_repo
+        run: |
+          response=$(curl -X POST "https://api.github.com/user/repos" \
+            -H "Authorization: token ${{ secrets.GH_PAT }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "name": "${{ github.event.client_payload.project_name }}",
+              "private": false,
+              "description": "Auto-generated Nuxt site"
+            }')
+          echo "repo_full_name=$(echo $response | jq -r '.full_name')" >> $GITHUB_ENV
+          echo "Created repository: ${{ env.repo_full_name }}"
+
+      - name: Checkout current repository
+        uses: actions/checkout@v3
+        with:
+          path: source
+
+      - name: Setup new repository
+        run: |
+          echo "Creating new repository structure..."
+          mkdir target
+          cd target
+          
+          echo "Copying files from source..."
+          # Copy everything except .git directory
+          rsync -av --exclude='.git' ../source/ ./
+          
+          echo "Initializing git..."
+          git init
+          git config --global user.name "GitHub Action"
+          git config --global user.email "action@github.com"
+          
+          echo "Adding files..."
+          git add .
+          git status
+          
+          echo "Creating commit..."
+          git commit -m "Initial commit from template"
+          
+          echo "Setting up remote..."
+          git remote add origin "https://x-access-token:${{ secrets.GH_PAT }}@github.com/${{ env.repo_full_name }}.git"
+          git branch -M main
+          
+          echo "Pushing to remote..."
+          git push -u origin main --force
+
+      - name: Create Netlify site
+        id: create-netlify
+        if: success()
+        run: |
+          response=$(curl -X POST "https://api.netlify.com/api/v1/sites" \
+            -H "Authorization: Bearer ${{ secrets.NETLIFY_AUTH_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "name": "${{ github.event.client_payload.project_name }}",
+              "repo": {
+                "repo_path": "'"${{ env.repo_full_name }}"'",
+                "repo_branch": "main"
+              }
+            }')
+          echo "site_url=$(echo $response | jq -r '.ssl_url')" >> $GITHUB_ENV
+
+      - name: Update repository with site URL
+        if: success()
+        run: |
+          curl -X PATCH "https://api.github.com/repos/${{ env.repo_full_name }}" \
+            -H "Authorization: token ${{ secrets.GH_PAT }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"description\": \"🚀 Live at: ${{ env.site_url }}\"}"
